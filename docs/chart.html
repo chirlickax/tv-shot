@@ -1,0 +1,44 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8"/>
+  <meta name="robots" content="noindex"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <style>
+    html, body, #tv { margin:0; height:100%; width:100%; background:#0f1114; }
+  </style>
+  <script src="https://s3.tradingview.com/tv.js"></script>
+</head>
+<body>
+  <div id="tv"></div>
+  <script>
+    const p = new URLSearchParams(location.search);
+    const raw = (p.get('symbol') || 'BTCUSDT').trim().toUpperCase();
+    // принудительно BINANCE: — заменяем любой префикс на BINANCE
+    const core = raw.includes(':') ? raw.split(':')[1] : raw;   // выкинуть старый префикс, если был
+    const symbol = `BINANCE:${core}`;
+
+    const tfParam = (p.get('tf') || '15').trim().toUpperCase();
+    // нормализация интервала под виджет: 15m→'15', 4h→'240', 1D→'D'
+    const interval = (tfParam === '1D' || tfParam === 'D') ? 'D'
+                    : (tfParam === '4H' || tfParam === '240') ? '240'
+                    : tfParam; // '15', '5', '60' и т.п.
+
+    new TradingView.widget({
+      container_id: "tv",
+      symbol,
+      interval,
+      autosize: true,
+      theme: "dark",
+      style: "1",                // свечи
+      timezone: "Etc/UTC",
+      locale: "ru",
+      hide_top_toolbar: true,
+      hide_side_toolbar: true,
+      hide_legend: true,
+      allow_symbol_change: false,
+      studies: []                // при желании добавь индикаторы
+    });
+  </script>
+</body>
+</html>
