@@ -1,0 +1,57 @@
+name: shot
+on:
+  workflow_dispatch:
+    inputs:
+      symbol:
+        description: "Symbol, e.g. BINANCE:BTCUSDT"
+        required: true
+        default: "BINANCE:BTCUSDT"
+
+jobs:
+  grab:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        tf: [ "15", "240", "1D" ]   # 15m, 4h, 1D
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install Playwright (Chromium)
+        run: |
+          npm -y init >/dev/null
+          npm i -D playwright@1
+          npx playwright install --with-deps chromium
+
+      - name: Shoot ${{ matrix.tf }}
+        env:
+          URL: https://chirlickax.github.io/tv-shot/docs/chart.html?symbol=${{ github.event.inputs.symbol }}&tf=${{ matrix.tf }}
+          TF: ${{ matrix.tf }}
+          SYM: ${{ github.event.inputs.symbol }}
+        run: |
+          node -e "
+            (async () => {
+              const { chromium } = await import('playwright');
+              const b = await chromium.launch({ args: ['--no-sandbox'], headless: true });
+              const p = await b.newPage({ viewport: { width:1200, height:700, deviceScaleFactor:2 } });
+              await p.goto(process.env.URL, { waitUntil:'networkidle' });
+              await p.waitForTimeout(1500);
+              const core = process.env.SYM.includes(':') ? process.env.SYM.split(':')[1] : process.env.SYM;
+              const name = `${core}_${process.env.TF}.png`;
+              await p.screenshot({ path: name, type: 'png' });
+              await b.close();
+              console.log('saved', name);
+            })();
+          "
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: shots-${{ github.event.inputs.symbol }}
+          path: "*.png"
+          retention-days: 1
