@@ -1,46 +1,29 @@
-// tv-shot/shot.js
-import { chromium } from '@playwright/test';
-import fs from 'fs';
-import path from 'path';
+import { chromium } from 'playwright';
 
-const SYMBOL = process.env.SYMBOL || 'BINANCE:BTCUSDT';
-const TF      = process.env.TF || '240';            // 240 / 15 / 1D
-const CORE    = process.env.CORE || SYMBOL.replace(/^BINANCE:/,'');
-const TV_URL  = process.env.TV_URL || 'https://<ВАШ_ЛОГИН>.github.io/tv-shot/'; // см. ниже
-const OUTDIR  = process.env.OUTDIR || 'shots';
-const WIDTH   = 1400;
-const HEIGHT  = 900;
+const TV_URL = process.env.TV_URL;           // https://chirlickax.github.io/tv-shot/
+const SYMBOL = process.env.SYMBOL || 'BINANCE:ETHUSDT';
+const CORE   = process.env.CORE   || 'ETHUSDT';
+const TF     = (process.env.TF || '15').trim(); // '15' | '240' | '1D'
 
-const url = new URL(TV_URL);
-url.searchParams.set('symbol', SYMBOL);
-url.searchParams.set('tf', TF);
+const outName = `${CORE}_${TF}.png`;
+const url = `${TV_URL}?symbol=${encodeURIComponent(SYMBOL)}&tf=${encodeURIComponent(TF)}`;
 
-const fname = `${CORE}_${TF}.png`;
-fs.mkdirSync(OUTDIR, { recursive: true });
+console.log('[shot] URL:', url, '→', outName);
 
-(async () => {
-  const browser = await chromium.launch({ args: ['--disable-dev-shm-usage'], headless: true });
-  const context = await browser.newContext({ viewport: { width: WIDTH, height: HEIGHT } });
-  const page = await context.newPage();
+const browser = await chromium.launch({ args: ['--no-sandbox'] });
+const page = await browser.newPage({ viewport: { width: 1400, height: 900 } });
 
-  console.log('Open:', url.toString());
-  await page.goto(url.toString(), { waitUntil: 'networkidle' });
+await page.goto(url, { waitUntil: 'networkidle' });
+// ждём пока TradingView виджет отметится готовым (флаг в index.html)
+await page.waitForFunction(() => window.__TV_READY__ === true, { timeout: 30000 });
 
-  // ждём, пока загрузится iframe виджета
-  const iframeHandle = await page.waitForSelector('iframe[src*="tradingview"]', { timeout: 30000 });
-  const frame = await iframeHandle.contentFrame();
+// небольшой доп.таймаут чтобы свечи перерисовались
+await page.waitForTimeout(800);
 
-  // небольшой запас времени на отрисовку свечей
-  await page.waitForTimeout(2500);
+const chart = await page.$('#chart-root');
+if (!chart) throw new Error('chart-root not found');
 
-  // Скриншот всего виджета (iframe). Можно заменить на элемент по селектору.
-  const bbox = await iframeHandle.boundingBox();
-  await page.screenshot({
-    path: path.join(OUTDIR, fname),
-    clip: bbox ?? undefined,
-    fullPage: !bbox
-  });
+await chart.screenshot({ path: outName });
+await browser.close();
 
-  console.log('Saved:', path.join(OUTDIR, fname));
-  await browser.close();
-})();
+console.log('[shot] saved:', outName);
