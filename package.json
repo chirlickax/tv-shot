@@ -1,0 +1,12 @@
+{
+  "name": "tv-shot",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "prepare": "playwright install --with-deps chromium",
+    "shot": "node tv-shot/shot.js"
+  },
+  "dependencies": {
+    "@playwright/test": "^1.46.1"
+  }
+}
