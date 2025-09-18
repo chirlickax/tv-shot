@@ -34,7 +34,7 @@ jobs:
 
       - name: Install deps
         run: |
-          npm ci
+          npm install --no-audit --no-fund
           npx playwright install --with-deps chromium
 
       - name: Shoot ${{ matrix.TF }}
