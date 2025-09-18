@@ -1,0 +1,124 @@
+name: shot
+
+on:
+  workflow_dispatch:
+    inputs:
+      symbol:
+        description: "TradingView symbol (e.g. BINANCE:ETHUSDT)"
+        required: true
+        default: "BINANCE:BTCUSDT"
+      core:
+        description: "Core name for files (e.g. ETHUSDT) — optional"
+        required: false
+        default: ""
+      tfs:
+        description: "Timeframes comma-separated (240,15,1D)"
+        required: true
+        default: "240,15,1D"
+
+jobs:
+  grab:
+    runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        tf: ${{ fromJSON('["dummy"]') }}  # заглушка — будем перезаписывать ниже
+
+    steps:
+      - name: Derive CORE & TF list
+        id: prep
+        run: |
+          CORE="${{ github.event.inputs.core }}"
+          SYM="${{ github.event.inputs.symbol }}"
+          if [ -z "$CORE" ]; then CORE="${SYM#BINANCE:}"; fi
+          echo "core=$CORE" >> $GITHUB_OUTPUT
+
+          TFS="${{ github.event.inputs.tfs }}"
+          # превращаем "240,15,1D" → JSON-массив '["240","15","1D"]'
+          JSON=$(node -e "console.log(JSON.stringify(process.argv[1].split(',').map(s=>s.trim())))" "$TFS")
+          echo "tfs_json=$JSON" >> $GITHUB_OUTPUT
+
+      - name: Set matrix dynamically
+        uses: actions/github-script@v7
+        id: dyn-matrix
+        with:
+          script: |
+            const tfs = JSON.parse(core.getInput('tfs_json', { required: true }));
+            return { tf: tfs };
+          result-encoding: string
+        env:
+          tfs_json: ${{ steps.prep.outputs.tfs_json }}
+
+      - name: Expand matrix from previous step
+        uses: actions/cache@v4  # просто «пустой» шаг, чтобы сменить стратегию — трюк не обязателен
+        with:
+          path: ""
+          key: dummy-${{ github.run_id }}
+
+      - name: Re-run job with real matrix
+        if: ${{ always() }}
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const m = JSON.parse(process.env.MATRIX);
+            core.info('New matrix: ' + JSON.stringify(m));
+          result-encoding: string
+        env:
+          MATRIX: ${{ steps.dyn-matrix.outputs.result }}
+
+  # Реальный съём — отдельная матричная джоба
+  shoot:
+    needs: grab
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        tf: ${{ fromJSON(needs.grab.outputs.tfs_json || '["240","15","1D"]') }}
+
+    env:
+      SYMBOL: ${{ github.event.inputs.symbol }}
+      CORE:   ${{ github.event.inputs.core || '' }}
+      TV_URL: https://chirlickax.github.io/tv-shot/
+      OUTDIR: shots
+      TF: ${{ matrix.tf }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+
+      - name: Install deps
+        run: npm ci
+
+      - name: Install Playwright Chromium
+        run: npm run prepare
+
+      - name: Compute CORE if empty
+        id: core
+        run: |
+          if [ -z "${CORE}" ]; then
+            CORE="${SYMBOL#BINANCE:}"
+            echo "CORE=$CORE" >> $GITHUB_ENV
+          fi
+          echo "Use CORE=$CORE, TF=$TF, SYMBOL=$SYMBOL"
+
+      - name: Shoot ${{ matrix.tf }}
+        run: npm run shot
+        env:
+          SYMBOL: ${{ env.SYMBOL }}
+          CORE:   ${{ env.CORE }}
+          TF:     ${{ env.TF }}
+          TV_URL: ${{ env.TV_URL }}
+          OUTDIR: ${{ env.OUTDIR }}
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: shots-${{ env.CORE }}
+          path: shots/*.png
+          retention-days: 3
