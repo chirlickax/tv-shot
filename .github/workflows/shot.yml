@@ -1,57 +1,104 @@
 name: shot
+
 on:
   workflow_dispatch:
     inputs:
       symbol:
-        description: "Symbol, e.g. BINANCE:BTCUSDT"
+        description: "TradingView symbol (e.g., BINANCE:ETHUSDT)"
         required: true
-        default: "BINANCE:BTCUSDT"
+        type: string
 
 jobs:
   grab:
-    runs-on: ubuntu-latest
     strategy:
+      fail-fast: false
       matrix:
-        tf: [ "15", "240", "1D" ]   # 15m, 4h, 1D
+        tf: [ "240", "15", "1D" ]  # твои ТФ
+
+    runs-on: ubuntu-latest
+
+    env:
+      TV_SYMBOL: ${{ inputs.symbol }}
+      TF: ${{ matrix.tf }}
+      TV_LANG: ru   # если нужен ru интерфейс
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
 
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          node-version: '20'
 
       - name: Install Playwright (Chromium)
         run: |
-          npm -y init >/dev/null
-          npm i -D playwright@1
+          npm i -g playwright@^1.47
           npx playwright install --with-deps chromium
 
+      # Нормализуем CORE = ETHUSDT из BINANCE:ETHUSDT
+      - name: Derive CORE symbol
+        id: norm
+        shell: bash
+        run: |
+          core="${TV_SYMBOL#BINANCE:}"
+          echo "core=${core}" >> "$GITHUB_OUTPUT"
+
+      # Скриншот делаем целиком внутри Node, все env читаем из process.env
       - name: Shoot ${{ matrix.tf }}
         env:
-          URL: https://chirlickax.github.io/tv-shot/docs/chart.html?symbol=${{ github.event.inputs.symbol }}&tf=${{ matrix.tf }}
-          TF: ${{ matrix.tf }}
-          SYM: ${{ github.event.inputs.symbol }}
+          CORE: ${{ steps.norm.outputs.core }}
         run: |
-          node -e "
-            (async () => {
-              const { chromium } = await import('playwright');
-              const b = await chromium.launch({ args: ['--no-sandbox'], headless: true });
-              const p = await b.newPage({ viewport: { width:1200, height:700, deviceScaleFactor:2 } });
-              await p.goto(process.env.URL, { waitUntil:'networkidle' });
-              await p.waitForTimeout(1500);
-              const core = process.env.SYM.includes(':') ? process.env.SYM.split(':')[1] : process.env.SYM;
-              const name = `${core}_${process.env.TF}.png`;
-              await p.screenshot({ path: name, type: 'png' });
-              await b.close();
-              console.log('saved', name);
-            })();
-          "
+          node <<'NODE'
+          const { chromium } = require('playwright');
+          (async () => {
+            const CORE = process.env.CORE;         // ETHUSDT
+            const TF   = process.env.TF;           // 240 / 15 / 1D
+            const TV   = process.env.TV_SYMBOL;    // BINANCE:ETHUSDT
+            const LANG = process.env.TV_LANG || 'ru';
+
+            // Имя файла
+            const name = `${CORE}_${TF}.png`;
+
+            // Ссылка на твою chart-страницу/виджет
+            // Вариант с твоим saved chart: подменяем symbol и interval через URL-квери (если поддерживает)
+            const url = `https://ru.tradingview.com/chart/?symbol=${encodeURIComponent(TV)}&interval=${encodeURIComponent(TF)}`;
+
+            const browser = await chromium.launch({ headless: true });
+            const ctx = await browser.newContext({ viewport: { width: 1600, height: 900 }});
+            const page = await ctx.newPage();
+
+            // Язык интерфейса
+            await page.addInitScript(lang => {
+              Object.defineProperty(navigator, 'language', { get: () => lang });
+              Object.defineProperty(navigator, 'languages', { get: () => [lang] });
+            }, LANG);
+
+            await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 90_000 });
+
+            // Подожди, пока график/идея отрисуется
+            await page.waitForTimeout(4000);
+
+            // Спрячь лишнее (по селекторам под свой layout)
+            try {
+              await page.evaluate(() => {
+                // Примеры (подгони под свой интерфейс):
+                // document.querySelectorAll('[data-name="header-toolbar"], .tv-dialog').forEach(el => el.style.display='none');
+              });
+            } catch {}
+
+            await page.screenshot({ path: name, fullPage: true });
+            console.log('saved', name);
+
+            await browser.close();
+          })().catch(err => { console.error(err); process.exit(1); });
+          NODE
 
       - name: Upload artifacts
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: shots-${{ github.event.inputs.symbol }}
-          path: "*.png"
-          retention-days: 1
+          name: charts-${{ matrix.tf }}
+          path: |
+            *.png
+          if-no-files-found: warn
