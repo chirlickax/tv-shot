@@ -1,0 +1,229 @@
+name: TradingView Screenshot Multi-Timeframe
+
+on:
+  workflow_dispatch:
+    inputs:
+      symbol:
+        description: 'Trading symbol with exchange (e.g., BINANCE:BTCUSDT)'
+        required: true
+        default: 'BINANCE:BTCUSDT'
+      timeframes:
+        description: 'Comma-separated timeframes (e.g., 240,15,1D)'
+        required: false
+        default: '240,15,1D'
+      chat_id:
+        description: 'Telegram Chat ID for response'
+        required: false
+        default: ''
+
+jobs:
+  screenshot:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install dependencies
+        run: |
+          npm init -y
+          npm install puppeteer axios form-data
+
+      - name: Generate screenshots for all timeframes
+        run: |
+          node << 'EOF'
+          const puppeteer = require('puppeteer');
+          const fs = require('fs');
+          const axios = require('axios');
+          const FormData = require('form-data');
+
+          (async () => {
+            // Parse inputs
+            const symbolInput = process.env.SYMBOL || 'BINANCE:BTCUSDT';
+            const timeframesStr = process.env.TIMEFRAMES || '240,15,1D';
+            const chatId = process.env.CHAT_ID || '';
+            
+            // Extract core symbol (remove exchange prefix)
+            const symbolCore = symbolInput.includes(':') 
+              ? symbolInput.split(':')[1] 
+              : symbolInput;
+            
+            // Parse timeframes
+            const timeframes = timeframesStr.split(',').map(tf => tf.trim());
+            
+            // Timeframe mapping for TradingView URLs
+            const tfMap = {
+              '15': '15',
+              '240': '240',
+              '1D': 'D',
+              '4h': '240',
+              '15m': '15',
+              '1d': 'D',
+              'D': 'D'
+            };
+            
+            console.log(`Processing ${symbolInput} for timeframes: ${timeframes.join(', ')}`);
+            
+            const browser = await puppeteer.launch({
+              headless: 'new',
+              args: [
+                '--no-sandbox',
+                '--disable-setuid-sandbox',
+                '--disable-dev-shm-usage',
+                '--disable-gpu',
+                '--window-size=1920,1080'
+              ]
+            });
+            
+            const screenshots = [];
+            
+            for (const tf of timeframes) {
+              try {
+                const tvInterval = tfMap[tf] || tf;
+                const url = `https://www.tradingview.com/chart/?symbol=${symbolInput}&interval=${tvInterval}`;
+                
+                console.log(`Opening TradingView: ${url}`);
+                
+                const page = await browser.newPage();
+                await page.setViewport({ width: 1920, height: 1080 });
+                
+                // Navigate to TradingView
+                await page.goto(url, { 
+                  waitUntil: 'networkidle2', 
+                  timeout: 60000 
+                });
+                
+                // Wait for chart to load
+                console.log(`Waiting for ${tf} chart to load...`);
+                await page.waitForTimeout(12000);
+                
+                // Try to close popups/dialogs
+                try {
+                  await page.evaluate(() => {
+                    // Close common TradingView popups
+                    const selectors = [
+                      '[data-name="close"]',
+                      '.close',
+                      '[aria-label="Close"]',
+                      'button[aria-label="Close"]',
+                      '.tv-dialog__close',
+                      '[data-role="button"][aria-label="Close"]'
+                    ];
+                    
+                    selectors.forEach(selector => {
+                      const elements = document.querySelectorAll(selector);
+                      elements.forEach(el => {
+                        try { el.click(); } catch(e) {}
+                      });
+                    });
+                  });
+                  await page.waitForTimeout(2000);
+                } catch (e) {
+                  console.log('No popups to close or error closing:', e.message);
+                }
+                
+                // Take screenshot
+                const filename = `${symbolCore}_${tf}.png`;
+                await page.screenshot({
+                  path: filename,
+                  fullPage: false
+                });
+                
+                console.log(`Screenshot saved: ${filename}`);
+                screenshots.push({
+                  filename,
+                  timeframe: tf,
+                  path: filename
+                });
+                
+                await page.close();
+                
+              } catch (error) {
+                console.error(`Error processing timeframe ${tf}:`, error.message);
+              }
+            }
+            
+            await browser.close();
+            
+            // Save screenshot info for next step
+            fs.writeFileSync('screenshots.json', JSON.stringify({
+              symbol: symbolInput,
+              symbolCore: symbolCore,
+              chatId: chatId,
+              screenshots: screenshots,
+              timestamp: new Date().toISOString()
+            }));
+            
+            console.log(`Generated ${screenshots.length} screenshots`);
+            
+          })();
+          EOF
+        env:
+          SYMBOL: ${{ github.event.inputs.symbol }}
+          TIMEFRAMES: ${{ github.event.inputs.timeframes }}
+          CHAT_ID: ${{ github.event.inputs.chat_id }}
+
+      - name: Send screenshots to Telegram
+        if: github.event.inputs.chat_id != ''
+        run: |
+          node << 'EOF'
+          const fs = require('fs');
+          const axios = require('axios');
+          const FormData = require('form-data');
+
+          (async () => {
+            const data = JSON.parse(fs.readFileSync('screenshots.json', 'utf8'));
+            const botToken = process.env.TELEGRAM_BOT_TOKEN;
+            const chatId = data.chatId;
+            
+            if (!botToken || !chatId) {
+              console.log('Telegram credentials not provided, skipping send');
+              return;
+            }
+            
+            console.log(`Sending ${data.screenshots.length} screenshots to chat ${chatId}`);
+            
+            // Send each screenshot as a photo
+            for (const screenshot of data.screenshots) {
+              try {
+                const form = new FormData();
+                form.append('chat_id', chatId);
+                form.append('photo', fs.createReadStream(screenshot.filename));
+                form.append('caption', `${data.symbol} - ${screenshot.timeframe}`);
+                
+                await axios.post(
+                  `https://api.telegram.org/bot${botToken}/sendPhoto`,
+                  form,
+                  { headers: form.getHeaders() }
+                );
+                
+                console.log(`Sent ${screenshot.filename} to Telegram`);
+                
+              } catch (error) {
+                console.error(`Error sending ${screenshot.filename}:`, error.message);
+              }
+            }
+            
+            console.log('All screenshots sent to Telegram');
+          })();
+          EOF
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+
+      - name: Upload screenshots as artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: tradingview-screenshots-${{ github.run_number }}
+          path: '*.png'
+          retention-days: 7
+
+      - name: Notify completion
+        if: always()
+        run: |
+          echo "Workflow completed"
+          echo "Screenshots available in artifacts"
